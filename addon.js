@@ -1,4 +1,5 @@
 const { addonBuilder } = require('stremio-addon-sdk');
+const axios = require('axios');
 
 const builder = new addonBuilder({
   id: 'org.cinestream.stremio.addon',
@@ -11,58 +12,92 @@ const builder = new addonBuilder({
   catalogs: []
 });
 
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+  'Referer': 'https://vidsrc.icu/',
+  'Origin': 'https://vidsrc.icu'
+};
+
+async function getVidsrcStreams(imdbId, type, season, episode) {
+  const streams = [];
+  try {
+    let apiUrl;
+    if (type === 'movie') {
+      apiUrl = `https://vidsrc.icu/api/movie/${imdbId}`;
+    } else {
+      apiUrl = `https://vidsrc.icu/api/tv/${imdbId}/${season}/${episode}`;
+    }
+
+    const { data } = await axios.get(apiUrl, {
+      headers: HEADERS,
+      timeout: 15000
+    });
+
+    if (!data || !data.sources) return streams;
+
+    for (const source of data.sources) {
+      if (!source.url) continue;
+      streams.push({
+        name: `CineStream | ${source.quality || 'HD'}`,
+        title: `🎬 ${source.label || 'Stream'}`,
+        url: source.url,
+        behaviorHints: { notWebReady: false }
+      });
+    }
+  } catch (e) {
+    console.log('VidSrc ICU error:', e.message);
+  }
+  return streams;
+}
+
+async function getBackupStreams(imdbId, type, season, episode) {
+  const streams = [];
+  try {
+    let apiUrl;
+    if (type === 'movie') {
+      apiUrl = `https://vidsrc.xyz/api/movie?imdb=${imdbId}`;
+    } else {
+      apiUrl = `https://vidsrc.xyz/api/tv?imdb=${imdbId}&s=${season}&e=${episode}`;
+    }
+
+    const { data } = await axios.get(apiUrl, {
+      headers: { 'User-Agent': HEADERS['User-Agent'] },
+      timeout: 15000
+    });
+
+    if (!data || !data.url) return streams;
+
+    streams.push({
+      name: 'CineStream | Backup HD',
+      title: '🎬 Backup Stream',
+      url: data.url,
+      behaviorHints: { notWebReady: false }
+    });
+  } catch (e) {
+    console.log('Backup error:', e.message);
+  }
+  return streams;
+}
+
 builder.defineStreamHandler(async ({ type, id }) => {
   const parts = id.split(':');
   const imdbId = parts[0];
   const season = parts[1] || '1';
   const episode = parts[2] || '1';
 
-  let streams = [];
+  console.log(`Getting streams for ${imdbId} (${type})`);
 
-  if (type === 'movie') {
-    streams = [
-      {
-        name: 'CineStream | 1080p',
-        title: '🎬 Full HD Stream',
-        url: `https://vidsrc.to/embed/movie/${imdbId}`,
-        behaviorHints: { notWebReady: false }
-      },
-      {
-        name: 'CineStream | HD',
-        title: '🎬 HD Stream',
-        url: `https://vidsrc.me/embed/movie?imdb=${imdbId}`,
-        behaviorHints: { notWebReady: false }
-      },
-      {
-        name: 'CineStream | Backup',
-        title: '🎬 Backup Stream',
-        url: `https://vidsrc.xyz/embed/movie?imdb=${imdbId}`,
-        behaviorHints: { notWebReady: false }
-      }
-    ];
-  } else if (type === 'series') {
-    streams = [
-      {
-        name: 'CineStream | 1080p',
-        title: `🎬 S${season}E${episode} Full HD`,
-        url: `https://vidsrc.to/embed/tv/${imdbId}/${season}/${episode}`,
-        behaviorHints: { notWebReady: false }
-      },
-      {
-        name: 'CineStream | HD',
-        title: `🎬 S${season}E${episode} HD`,
-        url: `https://vidsrc.me/embed/tv?imdb=${imdbId}&season=${season}&episode=${episode}`,
-        behaviorHints: { notWebReady: false }
-      },
-      {
-        name: 'CineStream | Backup',
-        title: `🎬 S${season}E${episode} Backup`,
-        url: `https://vidsrc.xyz/embed/tv?imdb=${imdbId}&season=${season}&episode=${episode}`,
-        behaviorHints: { notWebReady: false }
-      }
-    ];
-  }
+  const [main, backup] = await Promise.allSettled([
+    getVidsrcStreams(imdbId, type, season, episode),
+    getBackupStreams(imdbId, type, season, episode)
+  ]);
 
+  const streams = [
+    ...(main.status === 'fulfilled' ? main.value : []),
+    ...(backup.status === 'fulfilled' ? backup.value : [])
+  ];
+
+  console.log(`Found ${streams.length} streams for ${imdbId}`);
   return { streams };
 });
 
