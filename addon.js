@@ -1,26 +1,23 @@
 const { addonBuilder } = require('stremio-addon-sdk');
 const axios = require('axios');
-const cheerio = require('cheerio');
 
-// ── Manifest ──────────────────────────────────────────────
 const builder = new addonBuilder({
   id: 'org.cinestream.stremio.addon',
   version: '1.0.0',
   name: 'CineStream',
-  description: 'Hindi & English Movies and Series from CineStream sources',
-  logo: 'https://raw.githubusercontent.com/SaurabhKaperwan/CSX/master/CineStream/src/main/res/mipmap-xxxhdpi/ic_launcher.png',
+  description: 'Hindi & English Movies and Series',
   resources: ['stream'],
   types: ['movie', 'series'],
   idPrefixes: ['tt'],
   catalogs: []
 });
 
-// ── Helpers ────────────────────────────────────────────────
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept': 'application/json',
 };
 
+// Get title from IMDb ID using Cinemeta
 async function fetchMeta(imdbId, type) {
   try {
     const url = `https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`;
@@ -29,138 +26,116 @@ async function fetchMeta(imdbId, type) {
       title: data.meta.name,
       year: data.meta.year || ''
     };
-  } catch {
+  } catch (e) {
+    console.log('Meta fetch error:', e.message);
     return null;
   }
 }
 
-// ── Source 1: VegaMovies ───────────────────────────────────
-async function scrapeVegaMovies(title, type, season, episode) {
+// Source 1: YTS API (works perfectly from servers - movies only)
+async function getYTSStreams(title, year) {
   const streams = [];
   try {
-    const searchUrl = `https://vegamovies.mov/?s=${encodeURIComponent(title)}`;
+    const searchUrl = `https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(title)}&limit=5`;
     const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
-    const $ = cheerio.load(data);
 
-    const results = [];
-    $('article.post').each((i, el) => {
-      const link = $(el).find('a').first().attr('href');
-      const name = $(el).find('h2, h3').first().text().trim();
-      if (link && name.toLowerCase().includes(title.toLowerCase().split(' ')[0])) {
-        results.push({ link, name });
-      }
-    });
+    if (!data.data || !data.data.movies) return streams;
 
-    if (!results.length) return streams;
-    const postUrl = results[0].link;
-    const { data: postData } = await axios.get(postUrl, { headers: HEADERS, timeout: 10000 });
-    const $post = cheerio.load(postData);
+    const movies = data.data.movies;
+    const match = movies.find(m =>
+      m.title.toLowerCase().includes(title.toLowerCase().split(' ')[0]) ||
+      title.toLowerCase().includes(m.title.toLowerCase().split(' ')[0])
+    );
 
-    $post('a[href]').each((i, el) => {
-      const href = $post(el).attr('href') || '';
-      const text = $post(el).text().trim();
-      if (href.match(/\.(mp4|mkv|m3u8)/i) || href.includes('gdflix') || href.includes('driveleech')) {
-        streams.push({
-          name: 'CineStream | VegaMovies',
-          title: text || 'Stream',
-          url: href,
-          behaviorHints: { notWebReady: false }
-        });
-      }
-    });
-  } catch (e) {
-    console.log('VegaMovies error:', e.message);
-  }
-  return streams;
-}
+    if (!match) return streams;
 
-// ── Source 2: MoviesDrive ──────────────────────────────────
-async function scrapeMoviesDrive(title, type, season, episode) {
-  const streams = [];
-  try {
-    const searchUrl = `https://moviesdrive.forum/?s=${encodeURIComponent(title)}`;
-    const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
-    const $ = cheerio.load(data);
-
-    const results = [];
-    $('h2.wpt-title a, h3 a, .entry-title a').each((i, el) => {
-      const link = $(el).attr('href');
-      const name = $(el).text().trim();
-      if (link && name.toLowerCase().includes(title.toLowerCase().split(' ')[0])) {
-        results.push({ link, name });
-      }
-    });
-
-    if (!results.length) return streams;
-    const { data: postData } = await axios.get(results[0].link, { headers: HEADERS, timeout: 10000 });
-    const $post = cheerio.load(postData);
-
-    $post('a[href]').each((i, el) => {
-      const href = $post(el).attr('href') || '';
-      const text = $post(el).text().trim();
-      if (href.match(/\.(mp4|mkv|m3u8)/i) || text.match(/download|480p|720p|1080p/i)) {
-        streams.push({
-          name: 'CineStream | MoviesDrive',
-          title: text || 'Stream',
-          url: href,
-          behaviorHints: { notWebReady: false }
-        });
-      }
-    });
-  } catch (e) {
-    console.log('MoviesDrive error:', e.message);
-  }
-  return streams;
-}
-
-// ── Source 3: Moviesmod ────────────────────────────────────
-async function scrapeMoviesmod(title, type, season, episode) {
-  const streams = [];
-  try {
-    const searchUrl = `https://moviesmod.com/?s=${encodeURIComponent(title)}`;
-    const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
-    const $ = cheerio.load(data);
-
-    const results = [];
-    $('.result-item article a').each((i, el) => {
-      const link = $(el).attr('href');
-      const name = $(el).text().trim();
-      if (link) results.push({ link, name });
-    });
-    // fallback selector
-    if (!results.length) {
-      $('h2 a, h3 a').each((i, el) => {
-        const link = $(el).attr('href');
-        const name = $(el).text().trim();
-        if (link && name.toLowerCase().includes(title.toLowerCase().split(' ')[0])) {
-          results.push({ link, name });
-        }
+    for (const torrent of match.torrents) {
+      streams.push({
+        name: `CineStream | YTS\n${torrent.quality} ${torrent.type}`,
+        title: `⚡ ${torrent.size} | 👥 ${torrent.seeds} seeds`,
+        infoHash: torrent.hash.toLowerCase(),
+        sources: [`tracker:udp://open.demonii.com:1337/announce`,
+                  `tracker:udp://tracker.openbittorrent.com:80`,
+                  `tracker:udp://tracker.coppersurfer.tk:6969`],
+        behaviorHints: { bingeGroup: 'cinestream' }
       });
     }
-
-    if (!results.length) return streams;
-    const { data: postData } = await axios.get(results[0].link, { headers: HEADERS, timeout: 10000 });
-    const $post = cheerio.load(postData);
-
-    $post('a[href]').each((i, el) => {
-      const href = $post(el).attr('href') || '';
-      const text = $post(el).text().trim();
-      if (href.match(/\.(mp4|mkv|m3u8)/i) || text.match(/480p|720p|1080p|4k/i)) {
-        streams.push({
-          name: 'CineStream | Moviesmod',
-          title: text || 'Stream',
-          url: href,
-          behaviorHints: { notWebReady: false }
-        });
-      }
-    });
   } catch (e) {
-    console.log('Moviesmod error:', e.message);
+    console.log('YTS error:', e.message);
   }
   return streams;
 }
 
-// ── Stream Handler ─────────────────────────────────────────
+// Source 2: EZTV API (series only)
+async function getEZTVStreams(imdbId, season, episode) {
+  const streams = [];
+  try {
+    const imdbNumber = imdbId.replace('tt', '');
+    const url = `https://eztv.re/api/get-torrents?imdb_id=${imdbNumber}&limit=10`;
+    const { data } = await axios.get(url, { headers: HEADERS, timeout: 10000 });
+
+    if (!data.torrents) return streams;
+
+    const filtered = data.torrents.filter(t => {
+      if (!season || !episode) return true;
+      const s = String(season).padStart(2, '0');
+      const e = String(episode).padStart(2, '0');
+      return t.title.includes(`S${s}E${e}`) || t.title.includes(`s${s}e${e}`);
+    });
+
+    for (const torrent of filtered.slice(0, 5)) {
+      const hash = torrent.hash ? torrent.hash.toLowerCase() : null;
+      if (!hash) continue;
+      streams.push({
+        name: `CineStream | EZTV`,
+        title: `${torrent.title}\n💾 ${torrent.size_bytes ? Math.round(torrent.size_bytes / 1073741824 * 10) / 10 + ' GB' : 'Unknown size'} | 👥 ${torrent.seeds || 0} seeds`,
+        infoHash: hash,
+        sources: [`tracker:udp://open.demonii.com:1337/announce`,
+                  `tracker:udp://tracker.openbittorrent.com:80`],
+        behaviorHints: { bingeGroup: 'cinestream' }
+      });
+    }
+  } catch (e) {
+    console.log('EZTV error:', e.message);
+  }
+  return streams;
+}
+
+// Source 3: Public torrent search via Knaben API
+async function getKnabenStreams(title, type, season, episode) {
+  const streams = [];
+  try {
+    let query = title;
+    if (type === 'series' && season && episode) {
+      const s = String(season).padStart(2, '0');
+      const e = String(episode).padStart(2, '0');
+      query = `${title} S${s}E${e}`;
+    }
+
+    const url = `https://knaben.eu/api/v1/search?search=${encodeURIComponent(query)}&categories=200,201,202&orderBy=seeders&limit=5`;
+    const { data } = await axios.get(url, { headers: HEADERS, timeout: 10000 });
+
+    if (!data || !data.hits) return streams;
+
+    for (const item of data.hits.slice(0, 5)) {
+      if (!item.infoHash) continue;
+      streams.push({
+        name: `CineStream | Knaben`,
+        title: `${item.title}\n💾 ${item.bytes ? Math.round(item.bytes / 1073741824 * 10) / 10 + ' GB' : ''} | 👥 ${item.seeders || 0} seeds`,
+        infoHash: item.infoHash.toLowerCase(),
+        sources: [`tracker:udp://open.demonii.com:1337/announce`,
+                  `tracker:udp://tracker.openbittorrent.com:80`,
+                  `tracker:udp://tracker.coppersurfer.tk:6969`],
+        behaviorHints: { bingeGroup: 'cinestream' }
+      });
+    }
+  } catch (e) {
+    console.log('Knaben error:', e.message);
+  }
+  return streams;
+}
+
+// Main stream handler
 builder.defineStreamHandler(async ({ type, id }) => {
   const parts = id.split(':');
   const imdbId = parts[0];
@@ -170,23 +145,31 @@ builder.defineStreamHandler(async ({ type, id }) => {
   const meta = await fetchMeta(imdbId, type);
   if (!meta) return { streams: [] };
 
-  const title = meta.title;
-  console.log(`Searching for: ${title} (${type})`);
+  console.log(`Searching: ${meta.title} (${type})`);
 
-  // Run all scrapers in parallel
-  const [vega, drive, mod] = await Promise.allSettled([
-    scrapeVegaMovies(title, type, season, episode),
-    scrapeMoviesDrive(title, type, season, episode),
-    scrapeMoviesmod(title, type, season, episode),
-  ]);
+  let streams = [];
 
-  const streams = [
-    ...(vega.status === 'fulfilled' ? vega.value : []),
-    ...(drive.status === 'fulfilled' ? drive.value : []),
-    ...(mod.status === 'fulfilled' ? mod.value : []),
-  ];
+  if (type === 'movie') {
+    const [yts, knaben] = await Promise.allSettled([
+      getYTSStreams(meta.title, meta.year),
+      getKnabenStreams(meta.title, type, null, null)
+    ]);
+    streams = [
+      ...(yts.status === 'fulfilled' ? yts.value : []),
+      ...(knaben.status === 'fulfilled' ? knaben.value : [])
+    ];
+  } else {
+    const [eztv, knaben] = await Promise.allSettled([
+      getEZTVStreams(imdbId, season, episode),
+      getKnabenStreams(meta.title, type, season, episode)
+    ]);
+    streams = [
+      ...(eztv.status === 'fulfilled' ? eztv.value : []),
+      ...(knaben.status === 'fulfilled' ? knaben.value : [])
+    ];
+  }
 
-  console.log(`Found ${streams.length} streams for ${title}`);
+  console.log(`Found ${streams.length} streams for ${meta.title}`);
   return { streams };
 });
 
